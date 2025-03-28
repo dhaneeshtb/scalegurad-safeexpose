@@ -25,6 +25,7 @@ public class TunnelManager {
             case "show":
                 showConfiguration(args);
                 break;
+            case "expose":
             case "start":
                 Runtime.getRuntime().addShutdownHook(new Thread(()->{
                     deleteTunnel(args[1]);
