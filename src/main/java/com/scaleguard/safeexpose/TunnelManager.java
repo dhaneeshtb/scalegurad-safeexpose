@@ -130,6 +130,12 @@ public class TunnelManager {
             pf.setFqdn(json.getString("fqdn"));
             Thread t = sshClientTunnel.forwardPort(pf);
             t.join();
+            if(sshClientTunnel.isDisconnected()){
+                System.out.println("Disconnected Tunnel.. Sleeping 10 seconds");
+                Thread.sleep(10000);
+                deleteTunnel(appName);
+                startTunnel(appName,port);
+            }
         } catch (Exception e) {
             System.err.println("Error starting tunnel: " + e.getMessage());
         }
