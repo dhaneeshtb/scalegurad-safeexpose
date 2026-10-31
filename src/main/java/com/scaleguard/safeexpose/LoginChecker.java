@@ -40,8 +40,14 @@ public class LoginChecker {
     }
 
     public static JSONObject createTunnel(String hostUrl, String token,String name,int port) {
+        return createTunnel(hostUrl, token, name, port, null);
+    }
+
+    /** @param domain publish as name.domain (blank = the server's own choice) */
+    public static JSONObject createTunnel(String hostUrl, String token,String name,int port,String domain) {
         // Create JSON body
         JSONObject json = new JSONObject();
+        if (domain != null && !domain.isBlank()) json.put("baseDNS", domain.trim());
         json.put("host", hostUrl);
         json.put("name", name);
         json.put("port", port);

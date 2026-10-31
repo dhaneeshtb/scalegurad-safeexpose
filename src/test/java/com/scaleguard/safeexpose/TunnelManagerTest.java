@@ -31,6 +31,16 @@ public class TunnelManagerTest {
     }
 
     @Test
+    public void domainOptionIsSplitOffTheArguments() {
+        String[][] s = TunnelManager.splitDomain(new String[]{"8080", "--domain", "dhaneesh.in", "shop"});
+        assertArrayEquals(new String[]{"8080", "shop"}, s[0]);
+        assertEquals("dhaneesh.in", s[1][0]);
+        assertEquals("a.com", TunnelManager.splitDomain(new String[]{"-d", "a.com", "8080"})[1][0]);
+        assertEquals("b.com", TunnelManager.splitDomain(new String[]{"8080", "--domain=b.com"})[1][0]);
+        assertNull(TunnelManager.splitDomain(new String[]{"8080"})[1][0]);
+    }
+
+    @Test
     public void serverAddressesGetAScheme() {
         assertEquals("https://sg.example.com", TunnelManager.normalizeServer(" sg.example.com/ "));
         assertEquals("http://localhost:80", TunnelManager.normalizeServer("http://localhost:80"));

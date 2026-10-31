@@ -39,17 +39,27 @@ A server given without `http://` or `https://` is assumed to be https.
 | Command | What it does |
 |---|---|
 | `safeexpose <port> [name]` | expose `localhost:<port>`; the name defaults to `app-<port>` |
+| `safeexpose <port> [name] --domain example.com` | publish as `<name>.example.com` instead of the server's default |
+| `safeexpose domain example.com` | save a default domain |
 | `safeexpose delete <name>` | remove a tunnel |
 | `safeexpose configure [server user password]` | save settings |
 | `safeexpose show` | show saved settings |
 
 The older `safeexpose start <name> <port>` still works.
 
+## Choosing the public name
+
+The address is `https://<name>.<domain>`. The domain is, in order: `--domain` on the command (or `SAFEEXPOSE_DOMAIN`, or the one
+saved with `safeexpose domain`), then the server's `scaleguard.tunnel.domain` setting, then the first domain the server serves
+(Admin UI → DNS → *Domains served*, e.g. `app.dhaneesh.in` gives `my-app.app.dhaneesh.in`), then a DNS `base` record, then the
+server's own host name. Whatever you pick needs DNS (a wildcard `*.example.com` record to the gateway) so
+the name resolves, and the gateway orders its certificate automatically.
+
 ## How it works
 
 SafeExpose signs in to the server (`POST /signin`), asks it to create the route and DNS name (`POST /tunnel`, see the
 ScaleGuard [API reference](https://github.com/dhaneeshtb/scaleguard/blob/main/docs/API.md)), then opens an SSH reverse tunnel
-to the server (port 2222) that carries traffic for `https://<name>.<base-domain>` to your local port. The server needs a
+to the server (the host and SSH port the server reports, 2222 by default) that carries traffic for `https://<name>.<base-domain>` to your local port. The server needs a
 base DNS record for the tunnel domain.
 
 ## Troubleshooting

@@ -21,7 +21,12 @@ public class SshClientTunnel {
     private boolean isDisconnected=false;
 
 
-    private static int sshPort = 2222;
+    private int sshPort = 2222;
+
+    /** The SSH port the server reported for tunnels. */
+    public void setSshPort(int port) {
+        this.sshPort = port;
+    }
 
     public static class PortForard{
         public String getFqdn() {

@@ -32,14 +32,31 @@ public class TunnelManager {
             "SafeExpose: expose a local app through ScaleGuard",
             "",
             "  safeexpose <port> [name]       expose localhost:<port> (default name: app-<port>)",
+            "      --domain example.com       publish as <name>.example.com (default: the server's tunnel domain)",
             "  safeexpose configure [server user password]",
             "  safeexpose show                show the saved settings (password hidden)",
             "  safeexpose delete <name>       remove a tunnel",
             "",
             "First run asks for your ScaleGuard server, user and password. Env overrides:",
-            "  SAFEEXPOSE_SERVER, SAFEEXPOSE_USER, SAFEEXPOSE_PASSWORD");
+            "  SAFEEXPOSE_SERVER, SAFEEXPOSE_USER, SAFEEXPOSE_PASSWORD, SAFEEXPOSE_DOMAIN",
+            "A default domain can be saved with:  safeexpose domain example.com");
 
-    public static void main(String[] args) {
+    /** Removes "--domain x" / "-d x" / "--domain=x" from the arguments; the value is returned in index 0 of the second array. */
+    static String[][] splitDomain(String[] args) {
+        java.util.List<String> rest = new java.util.ArrayList<>();
+        String domain = null;
+        for (int i = 0; i < args.length; i++) {
+            if ((args[i].equals("--domain") || args[i].equals("-d")) && i + 1 < args.length) domain = args[++i];
+            else if (args[i].startsWith("--domain=")) domain = args[i].substring(9);
+            else rest.add(args[i]);
+        }
+        return new String[][]{rest.toArray(new String[0]), {domain}};
+    }
+
+    public static void main(String[] argv) {
+        String[][] split = splitDomain(argv);
+        String[] args = split[0];
+        String domainArg = split[1][0];
         if (args.length == 0 || args[0].equals("-h") || args[0].equals("--help") || args[0].equals("help")) {
             System.out.println(USAGE);
             return;
@@ -53,6 +70,10 @@ public class TunnelManager {
             case "show":
                 show();
                 break;
+            case "domain":
+                if (args.length == 2) saveDomain(args[1]);
+                else System.out.println("Usage: safeexpose domain <example.com>");
+                break;
             case "delete":
                 if (args.length == 2) deleteTunnel(args[1]);
                 else System.out.println("Usage: safeexpose delete <name>");
@@ -64,7 +85,7 @@ public class TunnelManager {
                     System.out.println(USAGE);
                     return;
                 }
-                expose(np[0], np[1]);
+                expose(np[0], np[1], domainArg);
             }
         }
     }
@@ -116,6 +137,7 @@ public class TunnelManager {
         if (System.getenv("SAFEEXPOSE_SERVER") != null) c.put("server", System.getenv("SAFEEXPOSE_SERVER"));
         if (System.getenv("SAFEEXPOSE_USER") != null) c.put("username", System.getenv("SAFEEXPOSE_USER"));
         if (System.getenv("SAFEEXPOSE_PASSWORD") != null) c.put("password", System.getenv("SAFEEXPOSE_PASSWORD"));
+        if (System.getenv("SAFEEXPOSE_DOMAIN") != null) c.put("domain", System.getenv("SAFEEXPOSE_DOMAIN"));
         return c;
     }
 
@@ -159,13 +181,47 @@ public class TunnelManager {
 
     private static void save(String server, String user, String password) {
         try {
-            Files.write(CONFIG, String.format("server=%s\nusername=%s\npassword=%s\n", normalizeServer(server), user, password).getBytes());
+            String domain = fileSettings().get("domain");
+            Files.write(CONFIG, (String.format("server=%s\nusername=%s\npassword=%s\n", normalizeServer(server), user, password)
+                    + (domain == null ? "" : "domain=" + domain + "\n")).getBytes());
             try {
                 Files.setPosixFilePermissions(CONFIG, PosixFilePermissions.fromString("rw-------"));   // it holds a password
             } catch (UnsupportedOperationException ignored) {
                 // not a POSIX file system
             }
             System.out.println("Saved to " + CONFIG);
+        } catch (IOException e) {
+            System.err.println("Error saving configuration: " + e.getMessage());
+        }
+    }
+
+    private static Map<String, String> fileSettings() {
+        Map<String, String> c = new HashMap<>();
+        try {
+            if (Files.exists(CONFIG)) {
+                for (String line : Files.readAllLines(CONFIG)) {
+                    String[] kv = line.split("=", 2);
+                    if (kv.length == 2) c.put(kv[0].trim(), kv[1].trim());
+                }
+            }
+        } catch (IOException ignored) {
+            // treated as empty
+        }
+        return c;
+    }
+
+    private static void saveDomain(String domain) {
+        Map<String, String> c = fileSettings();
+        if (!complete(c)) {
+            System.out.println("Run 'safeexpose configure' first.");
+            return;
+        }
+        c.put("domain", domain.trim());
+        StringBuilder sb = new StringBuilder();
+        c.forEach((k, v) -> sb.append(k).append('=').append(v).append('\n'));
+        try {
+            Files.write(CONFIG, sb.toString().getBytes());
+            System.out.println("Tunnels will be published as <name>." + domain.trim());
         } catch (IOException e) {
             System.err.println("Error saving configuration: " + e.getMessage());
         }
@@ -180,14 +236,16 @@ public class TunnelManager {
         System.out.println("Server:   " + c.get("server"));
         System.out.println("Username: " + c.get("username"));
         System.out.println("Password: ********");
+        System.out.println("Domain:   " + (c.get("domain") == null ? "(server default)" : c.get("domain")));
     }
 
     // ------------------------------------------------------------------ tunnels
 
-    private static void expose(String name, String port) {
+    private static void expose(String name, String port, String domainArg) {
         Map<String, String> c = settingsOrAsk();
         if (c == null) return;
         String server = normalizeServer(c.get("server"));
+        String domain = domainArg != null ? domainArg : c.get("domain");
         // remove the tunnel when the program ends (Ctrl+C)
         Runtime.getRuntime().addShutdownHook(new Thread(() -> deleteTunnel(name)));
         while (true) {
@@ -197,14 +255,15 @@ public class TunnelManager {
                 return;
             }
             LoginChecker.removeApp(server, token, name);       // clear a stale tunnel with this name
-            JSONObject json = LoginChecker.createTunnel(server, token, name, Integer.parseInt(port));
+            JSONObject json = LoginChecker.createTunnel(server, token, name, Integer.parseInt(port), domain);
             if (json == null) {
                 System.out.println("The server did not create the tunnel (see the message above).");
                 return;
             }
             try {
                 SshClientTunnel tunnel = new SshClientTunnel();
-                SshClientTunnel.PortForard pf = new SshClientTunnel.PortForard(new URL(server).getHost(), json.getString("username"),
+                tunnel.setSshPort(json.optInt("sshPort", 2222));         // the server says where to connect
+                SshClientTunnel.PortForard pf = new SshClientTunnel.PortForard(json.optString("sshHost", new URL(server).getHost()), json.getString("username"),
                         json.getString("password"), json.getInt("systemPort"), Integer.parseInt(port));
                 pf.setFqdn(json.getString("fqdn"));
                 System.out.println("\nExposing localhost:" + port + " at  " + json.getString("fqdn") + "\n(Ctrl+C to stop)\n");
