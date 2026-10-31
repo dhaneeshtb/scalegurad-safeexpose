@@ -31,18 +31,27 @@ elif [ "$(java_major)" -lt 11 ] 2>/dev/null; then
   java_help >&2
 fi
 
+say() { printf '==> %s\n' "$*"; }
+
+[ "$JAVA_OK" = yes ] && say "Java $(java_major) found"
 mkdir -p "$HOME_DIR" "$BIN_DIR"
 tmp="$HOME_DIR/safeexpose.jar.part"
-echo "Downloading SafeExpose..."
-curl -fsSL "$URL" -o "$tmp"
+say "Downloading $URL"
+if [ -t 2 ]; then curl -fL --progress-bar "$URL" -o "$tmp"; else curl -fsSL "$URL" -o "$tmp"; fi   # a progress bar when run from a terminal
+say "Downloaded $(wc -c < "$tmp" | tr -d ' ') bytes"
 
 # verify the download when a checksum is published next to the jar
+say "Verifying checksum"
 if sum="$(curl -fsSL "$URL.sha256" 2>/dev/null)"; then
   want="$(printf '%s' "$sum" | awk '{print $1}')"
   if command -v sha256sum >/dev/null 2>&1; then got="$(sha256sum "$tmp" | awk '{print $1}')"; else got="$(shasum -a 256 "$tmp" | awk '{print $1}')"; fi
   [ "$want" = "$got" ] || { rm -f "$tmp"; echo "safeexpose: checksum mismatch, not installed" >&2; exit 1; }
+  say "Checksum OK"
+else
+  say "No checksum published, skipping verification"
 fi
 mv "$tmp" "$HOME_DIR/safeexpose.jar"
+say "Installing the safeexpose command"
 
 cat > "$BIN_DIR/safeexpose" <<EOF
 #!/bin/sh
@@ -57,7 +66,7 @@ exec java -jar "$HOME_DIR/safeexpose.jar" "\$@"
 EOF
 chmod +x "$BIN_DIR/safeexpose"
 
-echo "Installed: $BIN_DIR/safeexpose"
+say "Installed: $BIN_DIR/safeexpose  (jar: $HOME_DIR/safeexpose.jar)"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) echo "Add it to your PATH:  export PATH=\"$BIN_DIR:\$PATH\"" ;;

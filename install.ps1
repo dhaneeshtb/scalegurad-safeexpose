@@ -8,12 +8,15 @@ $javaMissing = -not (Get-Command java -ErrorAction SilentlyContinue)
 if ($javaMissing) { Write-Warning "Java was not found. SafeExpose needs Java 11 or newer. Install it with:  winget install EclipseAdoptium.Temurin.17.JRE   (or https://adoptium.net)" }
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $jar = Join-Path $dir "safeexpose.jar"
+Write-Host "==> Downloading $url"
 Invoke-WebRequest -Uri $url -OutFile "$jar.part"
+Write-Host "==> Verifying checksum"
 try {
   $want = ((Invoke-WebRequest -Uri "$url.sha256").Content.Trim() -split "\s+")[0]
   if ((Get-FileHash "$jar.part" -Algorithm SHA256).Hash -ne $want.ToUpper()) { Remove-Item "$jar.part"; throw "checksum mismatch, not installed" }
 } catch [System.Net.WebException] { }
 Move-Item -Force "$jar.part" $jar
+Write-Host "==> Installing the safeexpose command"
 Set-Content -Path (Join-Path $dir "safeexpose.cmd") -Value "@echo off`r`nwhere java >nul 2>nul || (echo Java 11 or newer is required. Install: winget install EclipseAdoptium.Temurin.17.JRE & exit /b 1)`r`njava -jar `"$jar`" %*"
 $user = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($user -notlike "*$dir*") { [Environment]::SetEnvironmentVariable("Path", "$user;$dir", "User"); Write-Host "Added $dir to your PATH (open a new terminal)." }
