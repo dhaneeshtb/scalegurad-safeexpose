@@ -58,6 +58,7 @@ A server given without `http://` or `https://` is assumed to be https.
 | Command | What it does |
 |---|---|
 | `safeexpose <port> [name]` | expose `localhost:<port>`; the name defaults to `app-<port>` |
+| `safeexpose <host:port> [name]` | expose an app on another machine, e.g. `192.168.1.20:3000` |
 | `safeexpose <port> [name] --domain example.com` | publish as `<name>.example.com` instead of the server's default |
 | `safeexpose domain example.com` | save a default domain |
 | `safeexpose delete <name>` | remove a tunnel |
@@ -65,6 +66,13 @@ A server given without `http://` or `https://` is assumed to be https.
 | `safeexpose show` | show saved settings |
 
 The older `safeexpose start <name> <port>` still works.
+
+## Settings
+
+Nothing is built into the program: the server address, login, domain and SSH port come from you or from the server (the
+server tells the client which host and SSH port to use). Optional tuning, as environment variables or keys in
+`~/.tunnel_config`: `SAFEEXPOSE_SSH_PORT` (only needed with an older server that does not report it),
+`SAFEEXPOSE_RECONNECT_SECONDS` (default 10), `SAFEEXPOSE_CONNECT_SECONDS` (30), `SAFEEXPOSE_AUTH_SECONDS` (10).
 
 ## Choosing the public name
 

@@ -21,11 +21,21 @@ public class SshClientTunnel {
     private boolean isDisconnected=false;
 
 
-    private int sshPort = 2222;
+    private int sshPort;
+    private int connectSeconds = 30;
+    private int authSeconds = 10;
 
-    /** The SSH port the server reported for tunnels. */
+    /** The SSH port the server reported for tunnels (or the one configured). */
     public void setSshPort(int port) {
         this.sshPort = port;
+    }
+
+    public void setConnectSeconds(int s) {
+        this.connectSeconds = s;
+    }
+
+    public void setAuthSeconds(int s) {
+        this.authSeconds = s;
     }
 
     public static class PortForard{
@@ -43,6 +53,16 @@ public class SshClientTunnel {
         private int remotePort;
         private String remoteHost;
         private int localPort;
+        private String localHost = "localhost";
+
+        /** The machine the exposed app runs on, as seen from this one (default: this machine). */
+        public String getLocalHost() {
+            return localHost;
+        }
+
+        public void setLocalHost(String localHost) {
+            this.localHost = localHost;
+        }
 
         public String getUsername() {
             return username;
@@ -95,20 +115,6 @@ public class SshClientTunnel {
 
         }
     }
-    public static void main(String[] args) {
-
-        SshClientTunnel sshClientTunnel = new SshClientTunnel();
-        PortForard pf = new PortForard("router.unkloud.io","user","password",8099,8081);
-        Thread t= sshClientTunnel.forwardPort(pf);
-
-        try {
-            t.join();
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
-        }
-
-    }
-
     public boolean isDisconnected() {
         return isDisconnected;
     }
@@ -124,16 +130,16 @@ public class SshClientTunnel {
 
                 client.setForwardingFilter(new MyForwardingFilter()); // Set your filter implementation
                 try (ClientSession session = client.connect(portForard.getUsername(), portForard.getRemoteHost(), sshPort)
-                        .verify(1800, TimeUnit.SECONDS).getSession()) {
+                        .verify(connectSeconds, TimeUnit.SECONDS).getSession()) {
                     session.addPasswordIdentity(portForard.getPassword());
-                    session.auth().verify(5, TimeUnit.SECONDS);
+                    session.auth().verify(authSeconds, TimeUnit.SECONDS);
 
 
 
 
                     // Enable remote port forwarding
                     SshdSocketAddress remoteAddress = new SshdSocketAddress("0.0.0.0", portForard.getRemotePort());
-                    SshdSocketAddress localAddress = new SshdSocketAddress("localhost", portForard.getLocalPort());
+                    SshdSocketAddress localAddress = new SshdSocketAddress(portForard.getLocalHost(), portForard.getLocalPort());
                     PortForwardingTracker tracker = session.createRemotePortForwardingTracker(remoteAddress, localAddress);
 
                     tracker.getSession();

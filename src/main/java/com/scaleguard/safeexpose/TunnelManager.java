@@ -32,6 +32,7 @@ public class TunnelManager {
             "SafeExpose: expose a local app through ScaleGuard",
             "",
             "  safeexpose <port> [name]       expose localhost:<port> (default name: app-<port>)",
+            "  safeexpose <host:port> [name]  expose an app on another machine, e.g. 192.168.1.20:3000",
             "      --domain example.com       publish as <name>.example.com (default: the server's tunnel domain)",
             "  safeexpose configure [server user password]",
             "  safeexpose show                show the saved settings (password hidden)",
@@ -39,6 +40,8 @@ public class TunnelManager {
             "",
             "First run asks for your ScaleGuard server, user and password. Env overrides:",
             "  SAFEEXPOSE_SERVER, SAFEEXPOSE_USER, SAFEEXPOSE_PASSWORD, SAFEEXPOSE_DOMAIN",
+            "  SAFEEXPOSE_SSH_PORT (only if the server does not report it), SAFEEXPOSE_RECONNECT_SECONDS,",
+            "  SAFEEXPOSE_CONNECT_SECONDS, SAFEEXPOSE_AUTH_SECONDS   (or the same keys in ~/.tunnel_config)",
             "A default domain can be saved with:  safeexpose domain example.com");
 
     /** Removes "--domain x" / "-d x" / "--domain=x" from the arguments; the value is returned in index 0 of the second array. */
@@ -85,22 +88,39 @@ public class TunnelManager {
                     System.out.println(USAGE);
                     return;
                 }
-                expose(np[0], np[1], domainArg);
+                expose(np[0], np[1], np[2], domainArg);
             }
         }
     }
 
-    /** @return {name, port} or null when the arguments are not an expose request. */
+    /** The port or "host:port" being exposed -> {host or null, port}; null if it is neither. */
+    static String[] splitTarget(String t) {
+        if (isPort(t)) return new String[]{null, t};
+        int c = t.lastIndexOf(':');
+        if (c > 0 && isPort(t.substring(c + 1)) && t.substring(0, c).matches("[A-Za-z0-9.\\-\\[\\]:]+")) return new String[]{t.substring(0, c), t.substring(c + 1)};
+        return null;
+    }
+
+    /** @return {name, port, host-or-null} or null when the arguments are not an expose request. */
     static String[] parseExpose(String[] args) {
         if (args.length >= 1 && (args[0].equalsIgnoreCase("start") || args[0].equalsIgnoreCase("expose"))) {
-            if (args.length == 3 && isPort(args[2])) return new String[]{args[1], args[2]};      // legacy: start <name> <port>
-            if (args.length >= 2 && isPort(args[1])) return new String[]{args.length > 2 ? args[2] : "app-" + args[1], args[1]};
-            return null;
+            if (args.length == 3 && isPort(args[2])) return new String[]{args[1], args[2], null};   // older form: start <name> <port>
+            String[] t = args.length >= 2 ? splitTarget(args[1]) : null;
+            return t == null ? null : new String[]{args.length > 2 ? args[2] : "app-" + t[1], t[1], t[0]};
         }
-        if (args.length >= 1 && args.length <= 2 && isPort(args[0])) {
-            return new String[]{args.length == 2 ? args[1] : "app-" + args[0], args[0]};
+        String[] t = args.length >= 1 && args.length <= 2 ? splitTarget(args[0]) : null;
+        return t == null ? null : new String[]{args.length == 2 ? args[1] : "app-" + t[1], t[1], t[0]};
+    }
+
+    /** A number from the saved settings or the environment (SAFEEXPOSE_<KEY>), else the default. */
+    static int number(Map<String, String> c, String key, int dflt) {
+        String v = System.getenv("SAFEEXPOSE_" + key.replaceAll("([A-Z])", "_$1").toUpperCase());
+        if (v == null) v = c.get(key);
+        try {
+            return v == null ? dflt : Integer.parseInt(v.trim());
+        } catch (NumberFormatException e) {
+            return dflt;
         }
-        return null;
     }
 
     static boolean isPort(String s) {
@@ -248,7 +268,7 @@ public class TunnelManager {
 
     // ------------------------------------------------------------------ tunnels
 
-    private static void expose(String name, String port, String domainArg) {
+    private static void expose(String name, String port, String localHost, String domainArg) {
         Map<String, String> c = settingsOrAsk();
         if (c == null) return;
         String server = normalizeServer(c.get("server"));
@@ -277,15 +297,24 @@ public class TunnelManager {
             }
             try {
                 SshClientTunnel tunnel = new SshClientTunnel();
-                tunnel.setSshPort(json.optInt("sshPort", 2222));         // the server says where to connect
+                int sshPort = json.optInt("sshPort", number(c, "sshPort", 0));      // the server says where to connect
+                if (sshPort <= 0) {
+                    System.out.println("The server did not say which SSH port to use (an older server?). Set SAFEEXPOSE_SSH_PORT.");
+                    return;
+                }
+                tunnel.setSshPort(sshPort);
+                tunnel.setConnectSeconds(number(c, "connectSeconds", 30));
+                tunnel.setAuthSeconds(number(c, "authSeconds", 10));
                 SshClientTunnel.PortForard pf = new SshClientTunnel.PortForard(json.optString("sshHost", new URL(server).getHost()), json.getString("username"),
                         json.getString("password"), json.getInt("systemPort"), Integer.parseInt(port));
                 pf.setFqdn(json.getString("fqdn"));
-                System.out.println("\nExposing localhost:" + port + " at  " + json.getString("fqdn") + "\n(Ctrl+C to stop)\n");
+                if (localHost != null) pf.setLocalHost(localHost);
+                System.out.println("\nExposing " + pf.getLocalHost() + ":" + port + " at  " + json.getString("fqdn") + "\n(Ctrl+C to stop)\n");
                 tunnel.forwardPort(pf).join();
                 if (!tunnel.isDisconnected()) return;
-                System.out.println("Disconnected. Reconnecting in 10 seconds...");
-                Thread.sleep(10_000);
+                int wait = number(c, "reconnectSeconds", 10);
+                System.out.println("Disconnected. Reconnecting in " + wait + " seconds...");
+                Thread.sleep(wait * 1000L);
             } catch (InterruptedException e) {
                 return;
             } catch (Exception e) {
