@@ -13,7 +13,14 @@ root="$(cd -P "$(dirname "$src")" && pwd)"
 jar="${SAFEEXPOSE_JAR:-$root/target/safeexpose.jar}"
 
 if ! command -v java >/dev/null 2>&1; then
-  echo "safeexpose: Java 11 or newer is required (https://adoptium.net)" >&2
+  {
+    echo "safeexpose: Java 11 or newer is required but was not found. Install it, for example:"
+    echo "  macOS:          brew install openjdk@17"
+    echo "  Debian/Ubuntu:  sudo apt install openjdk-17-jre"
+    echo "  Fedora/RHEL:    sudo dnf install java-17-openjdk"
+    echo "  Windows:        winget install EclipseAdoptium.Temurin.17.JRE"
+    echo "  Anywhere:       https://adoptium.net"
+  } >&2
   exit 1
 fi
 

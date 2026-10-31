@@ -9,8 +9,27 @@ HOME_DIR="${SAFEEXPOSE_HOME:-$HOME/.safeexpose}"
 BIN_DIR="${SAFEEXPOSE_BIN:-$HOME/.local/bin}"
 URL="${SAFEEXPOSE_URL:-https://raw.githubusercontent.com/$REPO/main/dist/safeexpose.jar}"
 
-command -v java >/dev/null 2>&1 || { echo "safeexpose: Java 11 or newer is required (https://adoptium.net)" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo "safeexpose: curl is required" >&2; exit 1; }
+
+java_help() {
+  echo "  macOS:          brew install openjdk@17     (then follow brew's note to link it)"
+  echo "  Debian/Ubuntu:  sudo apt install openjdk-17-jre"
+  echo "  Fedora/RHEL:    sudo dnf install java-17-openjdk"
+  echo "  Windows:        winget install EclipseAdoptium.Temurin.17.JRE"
+  echo "  Anywhere:       https://adoptium.net"
+}
+java_major() { java -version 2>&1 | awk -F'[".]' '/version/ { print ($2 == "1") ? $3 : $2; exit }'; }
+
+JAVA_OK=yes
+if ! command -v java >/dev/null 2>&1; then
+  JAVA_OK=no
+  echo "WARNING: Java was not found. SafeExpose needs Java 11 or newer. Install it, for example:" >&2
+  java_help >&2
+elif [ "$(java_major)" -lt 11 ] 2>/dev/null; then
+  JAVA_OK=no
+  echo "WARNING: Java $(java_major) found, but SafeExpose needs Java 11 or newer. Install a newer one, for example:" >&2
+  java_help >&2
+fi
 
 mkdir -p "$HOME_DIR" "$BIN_DIR"
 tmp="$HOME_DIR/safeexpose.jar.part"
@@ -27,6 +46,13 @@ mv "$tmp" "$HOME_DIR/safeexpose.jar"
 
 cat > "$BIN_DIR/safeexpose" <<EOF
 #!/bin/sh
+if ! command -v java >/dev/null 2>&1; then
+  echo "safeexpose: Java 11 or newer is required but was not found. Install it, for example:" >&2
+  echo "  macOS: brew install openjdk@17   Debian/Ubuntu: sudo apt install openjdk-17-jre" >&2
+  echo "  Fedora: sudo dnf install java-17-openjdk   Windows: winget install EclipseAdoptium.Temurin.17.JRE" >&2
+  echo "  or https://adoptium.net" >&2
+  exit 1
+fi
 exec java -jar "$HOME_DIR/safeexpose.jar" "\$@"
 EOF
 chmod +x "$BIN_DIR/safeexpose"
@@ -36,4 +62,4 @@ case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) echo "Add it to your PATH:  export PATH=\"$BIN_DIR:\$PATH\"" ;;
 esac
-echo "Try:  safeexpose 8080"
+[ "$JAVA_OK" = yes ] && echo "Try:  safeexpose 8080" || echo "Installed, but install Java 11+ (see above) before running safeexpose."

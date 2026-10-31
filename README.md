@@ -11,7 +11,7 @@ Press Ctrl+C to stop; the tunnel is removed. If the connection drops it reconnec
 
 ## Install (no source code, no build)
 
-Needs Java 11+. One line downloads the prebuilt jar and adds a `safeexpose` command:
+Needs Java 11+ (the installer and the `safeexpose` command warn you, with install commands for macOS, Linux and Windows, if Java is missing or too old). One line downloads the prebuilt jar and adds a `safeexpose` command:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/dhaneeshtb/scalegurad-safeexpose/main/install.sh | sh
