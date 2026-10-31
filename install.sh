@@ -32,17 +32,20 @@ elif [ "$(java_major)" -lt 11 ] 2>/dev/null; then
 fi
 
 say() { printf '==> %s\n' "$*"; }
+# a stalled connection fails after 20 s of silence and is retried, instead of hanging
+CURL="curl -fL --connect-timeout 15 --speed-time 20 --speed-limit 1000 --retry 3 --retry-delay 2"
 
 [ "$JAVA_OK" = yes ] && say "Java $(java_major) found"
 mkdir -p "$HOME_DIR" "$BIN_DIR"
 tmp="$HOME_DIR/safeexpose.jar.part"
 say "Downloading $URL"
-if [ -t 2 ]; then curl -fL --progress-bar "$URL" -o "$tmp"; else curl -fsSL "$URL" -o "$tmp"; fi   # a progress bar when run from a terminal
+say "(about 6 MB; on a slow connection this can take a minute)"
+if [ -t 2 ]; then $CURL --progress-bar "$URL" -o "$tmp"; else $CURL -sS "$URL" -o "$tmp"; fi   # a progress bar when run from a terminal
 say "Downloaded $(wc -c < "$tmp" | tr -d ' ') bytes"
 
 # verify the download when a checksum is published next to the jar
 say "Verifying checksum"
-if sum="$(curl -fsSL "$URL.sha256" 2>/dev/null)"; then
+if sum="$($CURL -sS "$URL.sha256" 2>/dev/null)"; then
   want="$(printf '%s' "$sum" | awk '{print $1}')"
   if command -v sha256sum >/dev/null 2>&1; then got="$(sha256sum "$tmp" | awk '{print $1}')"; else got="$(shasum -a 256 "$tmp" | awk '{print $1}')"; fi
   [ "$want" = "$got" ] || { rm -f "$tmp"; echo "safeexpose: checksum mismatch, not installed" >&2; exit 1; }
