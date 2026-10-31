@@ -101,12 +101,4 @@ public class LoginChecker {
         return null;
 
     }
-
-    public static void main(String[] args) {
-        String hostUrl = "http://localhost"; // Change to actual login endpoint
-        String username = "scaleguard";
-        String password = "Scaleguard123$";
-        String loggedIn = checkLogin(hostUrl, username, password);
-        System.out.println("Login successful: " + loggedIn);
-    }
 }

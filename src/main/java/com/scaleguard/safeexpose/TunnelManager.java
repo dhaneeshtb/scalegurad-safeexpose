@@ -149,24 +149,31 @@ public class TunnelManager {
     private static Map<String, String> settingsOrAsk() {
         Map<String, String> c = settings();
         if (complete(c)) return c;
-        System.out.println("SafeExpose is not configured yet.");
-        interactiveConfigure();
+        System.out.println("SafeExpose needs your ScaleGuard login (saved to " + CONFIG + ", readable only by you).");
+        interactiveConfigure(c);
         c = settings();
         return complete(c) ? c : null;
     }
 
     private static void interactiveConfigure() {
+        interactiveConfigure(settings());
+    }
+
+    /** Asks only for what is not known yet (a changed password: pass the saved settings without it). */
+    private static void interactiveConfigure(Map<String, String> known) {
         Console console = System.console();
         Scanner in = console == null ? new Scanner(System.in) : null;
+        String server = known.get("server"), user = known.get("username"), pass = known.get("password");
         for (int attempt = 0; attempt < 3; attempt++) {
-            String server = normalizeServer(ask(console, in, "ScaleGuard server (e.g. scaleguard.example.com): ", false));
-            String user = ask(console, in, "Username: ", false);
-            String pass = ask(console, in, "Password: ", true);
+            if (server == null) server = normalizeServer(ask(console, in, "ScaleGuard server (e.g. scaleguard.example.com): ", false));
+            if (user == null) user = ask(console, in, "Username: ", false);
+            if (pass == null) pass = ask(console, in, "Password: ", true);
             if (LoginChecker.checkLogin(server, user, pass) != null) {
                 save(server, user, pass);
                 return;
             }
             System.out.println("Login failed. Check the server address, username and password.");
+            pass = null;                                   // ask the password again; keep the server and user
         }
     }
 
@@ -250,6 +257,14 @@ public class TunnelManager {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> deleteTunnel(name)));
         while (true) {
             String token = LoginChecker.checkLogin(server, c.get("username"), c.get("password"));
+            if (token == null && System.getenv("SAFEEXPOSE_PASSWORD") == null) {
+                // the saved password no longer works: ask for the new one and save it
+                Map<String, String> known = new HashMap<>(c);
+                known.remove("password");
+                interactiveConfigure(known);
+                c = settings();
+                token = complete(c) ? LoginChecker.checkLogin(server, c.get("username"), c.get("password")) : null;
+            }
             if (token == null) {
                 System.out.println("Login failed. Run 'safeexpose configure' again.");
                 return;

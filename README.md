@@ -9,21 +9,40 @@ safeexpose 8080 my-app       # https://my-app.<your-domain>
 
 Press Ctrl+C to stop; the tunnel is removed. If the connection drops it reconnects by itself.
 
-## Install
+## Install (no source code, no build)
 
-Needs Java 11+ (and Maven, to build once). Use the launcher script in this folder; it builds the jar on first use and rebuilds it when the source changes:
+Needs Java 11+. One line downloads the prebuilt jar and adds a `safeexpose` command:
 
 ```sh
-./safeexpose 8080                      # run it from here
-ln -s "$PWD/safeexpose" ~/.local/bin/safeexpose   # optional: use it from anywhere (~/.local/bin must be on your PATH)
+curl -fsSL https://raw.githubusercontent.com/dhaneeshtb/scalegurad-safeexpose/main/install.sh | sh
 ```
 
-On Windows use `safeexpose.cmd`. To use a prebuilt jar, set `SAFEEXPOSE_JAR=/path/to/safeexpose.jar` (nothing is built then).
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/dhaneeshtb/scalegurad-safeexpose/main/install.ps1 | iex
+```
+
+The jar is downloaded from [`dist/`](dist) in this repository and checked against its published SHA-256 before it is installed. The command goes to `~/.local/bin` (make sure it is on your
+`PATH`); change the places with `SAFEEXPOSE_HOME` / `SAFEEXPOSE_BIN`, or the download with `SAFEEXPOSE_URL`.
+
+### Publishing a new version (maintainers)
+
+```sh
+./release.sh                 # builds dist/safeexpose.jar and its checksum
+git add dist && git commit -m "release" && git push
+```
+
+### From source
+
+```sh
+./safeexpose 8080          # builds on first use (needs Maven); safeexpose.cmd on Windows
+```
 
 ## First run
 
-The first time, SafeExpose asks for your ScaleGuard server, username and password, checks them, and saves them to
-`~/.tunnel_config` (readable by you only). Or configure ahead of time:
+The first time, SafeExpose asks for your ScaleGuard server, username and password (typed hidden), checks them, and saves them to
+`~/.tunnel_config` in your home folder (readable by you only). If the saved password stops working it asks for the new one and saves that. Or configure ahead of time:
 
 ```sh
 safeexpose configure                         # prompts
