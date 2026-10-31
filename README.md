@@ -51,7 +51,7 @@ safeexpose show                              # server and user; the password is 
 ```
 
 For scripts and CI, skip the file: set `SAFEEXPOSE_SERVER`, `SAFEEXPOSE_USER` and `SAFEEXPOSE_PASSWORD`.
-A server given without `http://` or `https://` is assumed to be https.
+A server given without `http://` or `https://` is assumed to be https. `safeexpose help` lists everything.
 
 ## Commands
 
@@ -86,13 +86,16 @@ the name resolves, and the gateway orders its certificate automatically.
 
 SafeExpose signs in to the server (`POST /signin`), asks it to create the route and DNS name (`POST /tunnel`, see the
 ScaleGuard [API reference](https://github.com/dhaneeshtb/scaleguard/blob/main/docs/API.md)), then opens an SSH reverse tunnel
-to the server (the host and SSH port the server reports, 2222 by default) that carries traffic for `https://<name>.<base-domain>` to your local port. The server needs a
-base DNS record for the tunnel domain.
+to the server (the host and SSH port the server reports) that carries traffic for `https://<name>.<domain>` to your local port.
+WebSockets (for example a dev server's hot reload) go through it too. The server needs a domain to publish under (see
+*Choosing the public name*).
 
 ## Troubleshooting
 
 - **Login failed**: run `safeexpose configure` again.
-- **The server did not create the tunnel**: the message printed above it comes from the server (for example, no base DNS zone yet).
-- **Cannot connect**: the server's SSH port (2222) must be reachable from your machine.
+- **The server did not create the tunnel**: the message printed above it comes from the server (for example, an invalid `--domain`).
+- **Cannot connect**: the SSH port the server reports must be reachable from your machine (the server's firewall must allow it).
+- **The name does not resolve**: the domain's DNS must point at the gateway (a wildcard record, or a domain listed under DNS → Domains served).
+- **Java is missing**: install Java 11+; the installer prints the command for your system.
 
 MIT License.
