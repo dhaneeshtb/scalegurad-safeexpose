@@ -75,6 +75,8 @@ server tells the client which host and SSH port to use). Optional tuning, as env
 `SAFEEXPOSE_RECONNECT_SECONDS` (first wait, default 2), `SAFEEXPOSE_RECONNECT_MAX_SECONDS` (60), `SAFEEXPOSE_HEARTBEAT_SECONDS` (15),
 `SAFEEXPOSE_CONNECT_SECONDS` (30), `SAFEEXPOSE_AUTH_SECONDS` (10).
 
+Library logging is hidden by default; to see it run with `JAVA_TOOL_OPTIONS=-DsafeexposeLog=INFO` (or `DEBUG`).
+
 ## Network failures
 
 `safeexpose` is meant to be left running. It survives Wi-Fi changes, sleep and wake, a restarting server and short outages:

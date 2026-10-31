@@ -4,11 +4,10 @@ import org.apache.sshd.client.SshClient;
 import org.apache.sshd.client.session.ClientSession;
 import org.apache.sshd.client.session.forward.PortForwardingTracker;
 import org.apache.sshd.common.session.Session;
-import org.apache.sshd.common.session.SessionHeartbeatController;
+import org.apache.sshd.core.CoreModuleProperties;
 import org.apache.sshd.common.session.SessionListener;
 import org.apache.sshd.common.util.net.SshdSocketAddress;
 
-import org.apache.sshd.core.CoreModuleProperties;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -161,7 +160,9 @@ public class SshClientTunnel {
             try (SshClient client = SshClient.setUpDefaultClient()) {
                 client.setForwardingFilter(new MyForwardingFilter());
                 // probe the link: a connection that silently died (sleep, Wi-Fi change) is detected and the session ended
-                client.setSessionHeartbeat(SessionHeartbeatController.HeartbeatType.RESERVED, Duration.ofSeconds(heartbeatSeconds));
+                // the library's own keep-alive: a request every few seconds that the server must answer; no answer in time
+                // closes the session (so a link that died silently is noticed and the caller reconnects)
+                CoreModuleProperties.HEARTBEAT_INTERVAL.set(client, Duration.ofSeconds(heartbeatSeconds));
                 CoreModuleProperties.HEARTBEAT_REPLY_WAIT.set(client, Duration.ofSeconds(heartbeatSeconds));
                 client.start();
                 try (ClientSession session = client.connect(pf.getUsername(), pf.getRemoteHost(), sshPort)

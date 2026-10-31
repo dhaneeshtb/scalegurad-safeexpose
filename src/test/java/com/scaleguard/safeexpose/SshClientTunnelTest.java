@@ -152,4 +152,83 @@ public class SshClientTunnelTest {
         th.join(10_000);
         assertFalse(th.isAlive());
     }
+
+    @Test
+    public void aHealthyTunnelSurvivesManyHeartbeats() throws Exception {
+        int remote = freePort();
+        SshClientTunnel t = tunnel("secret", sshPort, remote);        // probes every second
+        Thread th = t.forwardPort(forward("secret", remote));
+        assertTrue(waitFor(t::isEstablished));
+        Thread.sleep(5_000);                                            // ~5 probes
+        assertTrue("the probes must not kill a healthy session (error: " + t.getError() + ")", th.isAlive());
+        try (Socket s = new Socket("127.0.0.1", remote)) {
+            s.setSoTimeout(5000);
+            new PrintWriter(s.getOutputStream(), true).println("still");
+            assertEquals("hi still", new BufferedReader(new InputStreamReader(s.getInputStream())).readLine());
+        }
+        t.stop();
+    }
+
+    /** A TCP relay that can be told to swallow everything: the link stays "open" but nothing arrives, like a dead Wi-Fi. */
+    private static final class Blackhole implements AutoCloseable {
+        final ServerSocket listener;
+        volatile boolean dropping;
+
+        Blackhole(int targetPort) throws Exception {
+            listener = new ServerSocket(0);
+            Thread accept = new Thread(() -> {
+                while (!listener.isClosed()) {
+                    try {
+                        Socket in = listener.accept();
+                        Socket out = new Socket("127.0.0.1", targetPort);
+                        pipe(in, out);
+                        pipe(out, in);
+                    } catch (Exception ignored) {
+                        // closed
+                    }
+                }
+            });
+            accept.setDaemon(true);
+            accept.start();
+        }
+
+        private void pipe(Socket from, Socket to) {
+            Thread t = new Thread(() -> {
+                byte[] buf = new byte[8192];
+                try {
+                    int n;
+                    while ((n = from.getInputStream().read(buf)) >= 0) {
+                        if (!dropping) {
+                            to.getOutputStream().write(buf, 0, n);
+                            to.getOutputStream().flush();
+                        }
+                    }
+                } catch (Exception ignored) {
+                    // closed
+                }
+            });
+            t.setDaemon(true);
+            t.start();
+        }
+
+        @Override
+        public void close() throws Exception {
+            listener.close();
+        }
+    }
+
+    @Test
+    public void aLinkThatSilentlyDiesIsNoticedByTheHeartbeat() throws Exception {
+        try (Blackhole link = new Blackhole(sshPort)) {
+            int remote = freePort();
+            SshClientTunnel t = tunnel("secret", link.listener.getLocalPort(), remote);   // heartbeat: 1 s
+            Thread th = t.forwardPort(forward("secret", remote));
+            assertTrue(waitFor(t::isEstablished));
+            link.dropping = true;                                       // no FIN, no RST: just silence
+            th.join(20_000);
+            assertFalse("the dead link ends the tunnel so the caller can reconnect (error: " + t.getError() + ")", th.isAlive());
+            assertTrue(t.isEstablished());
+            assertFalse(t.isAuthRejected());
+        }
+    }
 }
