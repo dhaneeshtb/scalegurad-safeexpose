@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# SafeExpose launcher: ./safeexpose 8080 [name]   (see ./safeexpose help)
+# Works from anywhere, also through a symlink (e.g. ln -s "$PWD/safeexpose" ~/.local/bin/safeexpose).
+set -euo pipefail
+
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do                       # resolve symlinks to find the project folder
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  [[ "$src" != /* ]] && src="$dir/$src"
+done
+root="$(cd -P "$(dirname "$src")" && pwd)"
+jar="${SAFEEXPOSE_JAR:-$root/target/safeexpose.jar}"
+
+if ! command -v java >/dev/null 2>&1; then
+  echo "safeexpose: Java 11 or newer is required (https://adoptium.net)" >&2
+  exit 1
+fi
+
+# build on first use, or when the sources are newer than the jar
+if [ ! -f "$jar" ] || [ -n "$(find "$root/src/main" "$root/pom.xml" -newer "$jar" -print -quit 2>/dev/null)" ]; then
+  if [ -z "${SAFEEXPOSE_JAR:-}" ] && command -v mvn >/dev/null 2>&1; then
+    echo "safeexpose: building..." >&2
+    (cd "$root" && mvn -q clean package -DskipTests) >&2 || { echo "safeexpose: build failed" >&2; exit 1; }
+  elif [ ! -f "$jar" ]; then
+    echo "safeexpose: $jar not found and Maven is not installed to build it" >&2
+    exit 1
+  fi
+fi
+
+exec java -jar "$jar" "$@"

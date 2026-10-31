@@ -2,164 +2,235 @@ package com.scaleguard.safeexpose;
 
 import org.json.JSONObject;
 
-import java.io.*;
+import java.io.Console;
+import java.io.IOException;
 import java.net.URL;
-import java.nio.file.*;
-import java.util.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Scanner;
 
+/**
+ * SafeExpose: publish a local app through a ScaleGuard server.
+ *
+ * <pre>
+ *   safeexpose 8080                 expose localhost:8080 (name defaults to app-8080)
+ *   safeexpose 8080 my-app          expose it as my-app.&lt;your-domain&gt;
+ *   safeexpose configure            save server, user and password (asked on first use)
+ *   safeexpose delete my-app        remove a tunnel
+ * </pre>
+ * Settings can also come from SAFEEXPOSE_SERVER, SAFEEXPOSE_USER and SAFEEXPOSE_PASSWORD.
+ */
 public class TunnelManager {
-    private static final String CONFIG_FILE_PATH = System.getProperty("user.home") + "/.tunnel_config";
+    private static final Path CONFIG = Paths.get(System.getProperty("user.home"), ".tunnel_config");
+
+    static final String USAGE = String.join("\n",
+            "SafeExpose: expose a local app through ScaleGuard",
+            "",
+            "  safeexpose <port> [name]       expose localhost:<port> (default name: app-<port>)",
+            "  safeexpose configure [server user password]",
+            "  safeexpose show                show the saved settings (password hidden)",
+            "  safeexpose delete <name>       remove a tunnel",
+            "",
+            "First run asks for your ScaleGuard server, user and password. Env overrides:",
+            "  SAFEEXPOSE_SERVER, SAFEEXPOSE_USER, SAFEEXPOSE_PASSWORD");
 
     public static void main(String[] args) {
-        if (args.length == 0) {
-            System.out.println("Usage: <configure/start/delete> [options]");
+        if (args.length == 0 || args[0].equals("-h") || args[0].equals("--help") || args[0].equals("help")) {
+            System.out.println(USAGE);
             return;
         }
-
-
-
         switch (args[0].toLowerCase()) {
             case "configure":
-                handleConfiguration(args);
+                if (args.length == 4) save(args[1], args[2], args[3]);
+                else if (args.length == 1) interactiveConfigure();
+                else System.out.println("Usage: safeexpose configure [server user password]");
                 break;
             case "show":
-                showConfiguration(args);
-                break;
-            case "expose":
-            case "start":
-                Runtime.getRuntime().addShutdownHook(new Thread(()->{
-                    deleteTunnel(args[1]);
-                }));
-                deleteTunnel(args[1]);
-                if (args.length == 3) startTunnel(args[1], args[2]);
-                else System.out.println("Usage: java TunnelManager start <app-name> <port>");
+                show();
                 break;
             case "delete":
                 if (args.length == 2) deleteTunnel(args[1]);
-                else System.out.println("Usage: java TunnelManager delete <app-name>");
+                else System.out.println("Usage: safeexpose delete <name>");
                 break;
-            default:
-                System.out.println("Unknown command. Use 'configure', 'start', or 'delete'.");
+            default: {
+                // "safeexpose 8080 [name]", and the older "start|expose <name> <port>"
+                String[] np = parseExpose(args);
+                if (np == null) {
+                    System.out.println(USAGE);
+                    return;
+                }
+                expose(np[0], np[1]);
+            }
         }
     }
 
-    private static void handleConfiguration(String[] args) {
-        if (args.length == 4) {
-            configureTunnel(args[1], args[2], args[3]);
-        } else if (args.length == 1) {
-            try (Scanner scanner = new Scanner(System.in)) {
-                while (true) {
-                    System.out.print("Enter Scaleguard Host URL: ");
-                    String hostUrl = scanner.nextLine();
-                    System.out.print("Enter Scaleguard Username: ");
-                    String username = scanner.nextLine();
-                    System.out.print("Enter Scaleguard Password: ");
-                    String password = scanner.nextLine();
+    /** @return {name, port} or null when the arguments are not an expose request. */
+    static String[] parseExpose(String[] args) {
+        if (args.length >= 1 && (args[0].equalsIgnoreCase("start") || args[0].equalsIgnoreCase("expose"))) {
+            if (args.length == 3 && isPort(args[2])) return new String[]{args[1], args[2]};      // legacy: start <name> <port>
+            if (args.length >= 2 && isPort(args[1])) return new String[]{args.length > 2 ? args[2] : "app-" + args[1], args[1]};
+            return null;
+        }
+        if (args.length >= 1 && args.length <= 2 && isPort(args[0])) {
+            return new String[]{args.length == 2 ? args[1] : "app-" + args[0], args[0]};
+        }
+        return null;
+    }
 
-                    if (LoginChecker.checkLogin(hostUrl, username, password) != null) {
-                        configureTunnel(hostUrl, username, password);
-                        break;
-                    } else {
-                        System.out.println("Invalid credentials or host URL. Try again.");
-                    }
+    static boolean isPort(String s) {
+        try {
+            int p = Integer.parseInt(s);
+            return p > 0 && p < 65536;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    /** "scaleguard.example.com" -> "https://scaleguard.example.com"; trailing slashes dropped. */
+    static String normalizeServer(String s) {
+        String t = s.trim();
+        if (!t.contains("://")) t = "https://" + t;
+        while (t.endsWith("/")) t = t.substring(0, t.length() - 1);
+        return t;
+    }
+
+    // ------------------------------------------------------------------ settings
+
+    private static Map<String, String> settings() {
+        Map<String, String> c = new HashMap<>();
+        try {
+            if (Files.exists(CONFIG)) {
+                for (String line : Files.readAllLines(CONFIG)) {
+                    String[] kv = line.split("=", 2);
+                    if (kv.length == 2) c.put(kv[0].trim(), kv[1].trim());
                 }
             }
-        } else {
-            System.out.println("Usage: java TunnelManager configure <server-host> <username> <password>");
-        }
-    }
-
-    private static void showConfiguration(String[] args) {
-        if (!Files.exists(Paths.get(CONFIG_FILE_PATH))) {
-            System.out.println("Configuration not found. Run 'configure' first.");
-            return;
-        }
-        try {
-            Map<String, String> config = loadConfiguration();
-            System.out.println("Scaleguard Host URL:"+config.get("server"));
-            System.out.println("Scaleguard Username:"+config.get("username"));
-            System.out.println("Scaleguard Password:"+config.get("password"));
-
         } catch (IOException e) {
-            throw new RuntimeException(e);
+            System.err.println("Could not read " + CONFIG + ": " + e.getMessage());
+        }
+        if (System.getenv("SAFEEXPOSE_SERVER") != null) c.put("server", System.getenv("SAFEEXPOSE_SERVER"));
+        if (System.getenv("SAFEEXPOSE_USER") != null) c.put("username", System.getenv("SAFEEXPOSE_USER"));
+        if (System.getenv("SAFEEXPOSE_PASSWORD") != null) c.put("password", System.getenv("SAFEEXPOSE_PASSWORD"));
+        return c;
+    }
+
+    private static boolean complete(Map<String, String> c) {
+        return c.get("server") != null && c.get("username") != null && c.get("password") != null;
+    }
+
+    /** Saved settings, asking for them (once) when this is the first run. Null if they cannot be had. */
+    private static Map<String, String> settingsOrAsk() {
+        Map<String, String> c = settings();
+        if (complete(c)) return c;
+        System.out.println("SafeExpose is not configured yet.");
+        interactiveConfigure();
+        c = settings();
+        return complete(c) ? c : null;
+    }
+
+    private static void interactiveConfigure() {
+        Console console = System.console();
+        Scanner in = console == null ? new Scanner(System.in) : null;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            String server = normalizeServer(ask(console, in, "ScaleGuard server (e.g. scaleguard.example.com): ", false));
+            String user = ask(console, in, "Username: ", false);
+            String pass = ask(console, in, "Password: ", true);
+            if (LoginChecker.checkLogin(server, user, pass) != null) {
+                save(server, user, pass);
+                return;
+            }
+            System.out.println("Login failed. Check the server address, username and password.");
         }
     }
 
-    private static void configureTunnel(String serverHost, String username, String password) {
+    private static String ask(Console console, Scanner in, String prompt, boolean secret) {
+        System.out.print(prompt);
+        System.out.flush();
+        if (console != null) {
+            return secret ? new String(console.readPassword()) : console.readLine();
+        }
+        return in.hasNextLine() ? in.nextLine() : "";
+    }
+
+    private static void save(String server, String user, String password) {
         try {
-            String configData = String.format("server=%s\nusername=%s\npassword=%s", serverHost, username, password);
-            Files.write(Paths.get(CONFIG_FILE_PATH), configData.getBytes());
-            System.out.println("Configuration saved successfully.");
+            Files.write(CONFIG, String.format("server=%s\nusername=%s\npassword=%s\n", normalizeServer(server), user, password).getBytes());
+            try {
+                Files.setPosixFilePermissions(CONFIG, PosixFilePermissions.fromString("rw-------"));   // it holds a password
+            } catch (UnsupportedOperationException ignored) {
+                // not a POSIX file system
+            }
+            System.out.println("Saved to " + CONFIG);
         } catch (IOException e) {
             System.err.println("Error saving configuration: " + e.getMessage());
         }
     }
 
-    private static Map<String, String> loadConfiguration() throws IOException {
-        List<String> lines = Files.readAllLines(Paths.get(CONFIG_FILE_PATH));
-        Map<String, String> config = new HashMap<>();
-        for (String line : lines) {
-            String[] parts = line.split("=", 2);
-            if (parts.length == 2) config.put(parts[0].trim(), parts[1].trim());
-        }
-        return config;
-    }
-
-    private static void startTunnel(String appName, String port) {
-        if (!Files.exists(Paths.get(CONFIG_FILE_PATH))) {
-            System.out.println("Configuration not found. Run 'configure' first.");
+    private static void show() {
+        Map<String, String> c = settings();
+        if (!complete(c)) {
+            System.out.println("Not configured. Run 'safeexpose configure'.");
             return;
         }
+        System.out.println("Server:   " + c.get("server"));
+        System.out.println("Username: " + c.get("username"));
+        System.out.println("Password: ********");
+    }
 
-        try {
-            Map<String, String> config = loadConfiguration();
-            String token = LoginChecker.checkLogin(config.get("server"), config.get("username"), config.get("password"));
+    // ------------------------------------------------------------------ tunnels
+
+    private static void expose(String name, String port) {
+        Map<String, String> c = settingsOrAsk();
+        if (c == null) return;
+        String server = normalizeServer(c.get("server"));
+        // remove the tunnel when the program ends (Ctrl+C)
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> deleteTunnel(name)));
+        while (true) {
+            String token = LoginChecker.checkLogin(server, c.get("username"), c.get("password"));
             if (token == null) {
-                System.out.println("Invalid configuration. Run 'configure' again.");
+                System.out.println("Login failed. Run 'safeexpose configure' again.");
                 return;
             }
-
-
-            JSONObject json = LoginChecker.createTunnel(config.get("server"), token, appName, Integer.parseInt(port));
-            System.out.println(json);
-
-            URL hUrl = new URL(config.get("server"));
-            SshClientTunnel sshClientTunnel = new SshClientTunnel();
-            SshClientTunnel.PortForard pf = new SshClientTunnel.PortForard(
-                    hUrl.getHost(), json.getString("username"), json.getString("password"), json.getInt("systemPort"), Integer.parseInt(port));
-
-            pf.setFqdn(json.getString("fqdn"));
-            Thread t = sshClientTunnel.forwardPort(pf);
-            t.join();
-            if(sshClientTunnel.isDisconnected()){
-                System.out.println("Disconnected Tunnel.. Sleeping 10 seconds");
-                Thread.sleep(10000);
-                deleteTunnel(appName);
-                startTunnel(appName,port);
+            LoginChecker.removeApp(server, token, name);       // clear a stale tunnel with this name
+            JSONObject json = LoginChecker.createTunnel(server, token, name, Integer.parseInt(port));
+            if (json == null) {
+                System.out.println("The server did not create the tunnel (see the message above).");
+                return;
             }
-        } catch (Exception e) {
-            System.err.println("Error starting tunnel: " + e.getMessage());
+            try {
+                SshClientTunnel tunnel = new SshClientTunnel();
+                SshClientTunnel.PortForard pf = new SshClientTunnel.PortForard(new URL(server).getHost(), json.getString("username"),
+                        json.getString("password"), json.getInt("systemPort"), Integer.parseInt(port));
+                pf.setFqdn(json.getString("fqdn"));
+                System.out.println("\nExposing localhost:" + port + " at  " + json.getString("fqdn") + "\n(Ctrl+C to stop)\n");
+                tunnel.forwardPort(pf).join();
+                if (!tunnel.isDisconnected()) return;
+                System.out.println("Disconnected. Reconnecting in 10 seconds...");
+                Thread.sleep(10_000);
+            } catch (InterruptedException e) {
+                return;
+            } catch (Exception e) {
+                System.err.println("Error starting tunnel: " + e.getMessage());
+                return;
+            }
         }
     }
 
-    private static void deleteTunnel(String appName) {
-        if (!Files.exists(Paths.get(CONFIG_FILE_PATH))) {
-            System.out.println("Configuration not found. Run 'configure' first.");
+    private static void deleteTunnel(String name) {
+        Map<String, String> c = settings();
+        if (!complete(c)) {
+            System.out.println("Not configured. Run 'safeexpose configure'.");
             return;
         }
-
-        try {
-            Map<String, String> config = loadConfiguration();
-            String token = LoginChecker.checkLogin(config.get("server"), config.get("username"), config.get("password"));
-            if (token == null) {
-                System.out.println("Invalid configuration. Run 'configure' again.");
-                return;
-            }
-
-            LoginChecker.removeApp(config.get("server"), token, appName);
-            System.out.println("App removed successfully: " + appName);
-        } catch (Exception e) {
-            System.err.println("Error deleting tunnel: " + e.getMessage());
-        }
+        String server = normalizeServer(c.get("server"));
+        String token = LoginChecker.checkLogin(server, c.get("username"), c.get("password"));
+        if (token == null) return;
+        LoginChecker.removeApp(server, token, name);
+        System.out.println("Removed: " + name);
     }
 }
