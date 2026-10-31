@@ -40,8 +40,9 @@ public class TunnelManager {
             "",
             "First run asks for your ScaleGuard server, user and password. Env overrides:",
             "  SAFEEXPOSE_SERVER, SAFEEXPOSE_USER, SAFEEXPOSE_PASSWORD, SAFEEXPOSE_DOMAIN",
-            "  SAFEEXPOSE_SSH_PORT (only if the server does not report it), SAFEEXPOSE_RECONNECT_SECONDS,",
-            "  SAFEEXPOSE_CONNECT_SECONDS, SAFEEXPOSE_AUTH_SECONDS   (or the same keys in ~/.tunnel_config)",
+            "  SAFEEXPOSE_SSH_PORT (only if the server does not report it), SAFEEXPOSE_RECONNECT_SECONDS (first wait, 2),",
+            "  SAFEEXPOSE_RECONNECT_MAX_SECONDS (60), SAFEEXPOSE_HEARTBEAT_SECONDS (15), SAFEEXPOSE_CONNECT_SECONDS, SAFEEXPOSE_AUTH_SECONDS",
+            "  (or the same keys in ~/.tunnel_config)",
             "A default domain can be saved with:  safeexpose domain example.com");
 
     /** Removes "--domain x" / "-d x" / "--domain=x" from the arguments; the value is returned in index 0 of the second array. */
@@ -188,12 +189,20 @@ public class TunnelManager {
             if (server == null) server = normalizeServer(ask(console, in, "ScaleGuard server (e.g. scaleguard.example.com): ", false));
             if (user == null) user = ask(console, in, "Username: ", false);
             if (pass == null) pass = ask(console, in, "Password: ", true);
-            if (LoginChecker.checkLogin(server, user, pass) != null) {
-                save(server, user, pass);
+            try {
+                if (LoginChecker.checkLogin(server, user, pass) != null) {
+                    save(server, user, pass);
+                    return;
+                }
+                System.out.println("Login failed. Check the username and password.");
+                pass = null;                               // ask the password again; keep the server and user
+            } catch (LoginChecker.NetworkException e) {
+                System.out.println("Cannot reach " + server + " (" + e.getMessage() + "). Check the address and your connection.");
+                server = null;                             // a wrong address is the likely cause: ask for it again
+            } catch (LoginChecker.HttpFailure e) {
+                System.out.println(e.getMessage());
                 return;
             }
-            System.out.println("Login failed. Check the server address, username and password.");
-            pass = null;                                   // ask the password again; keep the server and user
         }
     }
 
@@ -268,59 +277,90 @@ public class TunnelManager {
 
     // ------------------------------------------------------------------ tunnels
 
+    /** Signs in; if the saved password is refused, asks for the new one (never mistakes a network failure for that). */
+    private static String login(String server, java.util.concurrent.atomic.AtomicReference<Map<String, String>> settings) {
+        Map<String, String> c = settings.get();
+        String token = LoginChecker.checkLogin(server, c.get("username"), c.get("password"));
+        if (token != null) return token;
+        if (System.getenv("SAFEEXPOSE_PASSWORD") != null) throw new LoginChecker.HttpFailure(401, "Login refused. Check SAFEEXPOSE_USER / SAFEEXPOSE_PASSWORD.");
+        Map<String, String> known = new HashMap<>(c);
+        known.remove("password");
+        interactiveConfigure(known);                      // the saved password no longer works: ask for the new one and save it
+        c = settings();
+        settings.set(c);
+        token = complete(c) ? LoginChecker.checkLogin(server, c.get("username"), c.get("password")) : null;
+        if (token == null) throw new LoginChecker.HttpFailure(401, "Login failed. Run 'safeexpose configure' again.");
+        return token;
+    }
+
     private static void expose(String name, String port, String localHost, String domainArg) {
-        Map<String, String> c = settingsOrAsk();
-        if (c == null) return;
-        String server = normalizeServer(c.get("server"));
-        String domain = domainArg != null ? domainArg : c.get("domain");
-        // remove the tunnel when the program ends (Ctrl+C)
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> deleteTunnel(name)));
-        while (true) {
-            String token = LoginChecker.checkLogin(server, c.get("username"), c.get("password"));
-            if (token == null && System.getenv("SAFEEXPOSE_PASSWORD") == null) {
-                // the saved password no longer works: ask for the new one and save it
-                Map<String, String> known = new HashMap<>(c);
-                known.remove("password");
-                interactiveConfigure(known);
-                c = settings();
-                token = complete(c) ? LoginChecker.checkLogin(server, c.get("username"), c.get("password")) : null;
-            }
-            if (token == null) {
-                System.out.println("Login failed. Run 'safeexpose configure' again.");
-                return;
-            }
-            LoginChecker.removeApp(server, token, name);       // clear a stale tunnel with this name
-            JSONObject json = LoginChecker.createTunnel(server, token, name, Integer.parseInt(port), domain);
-            if (json == null) {
-                System.out.println("The server did not create the tunnel (see the message above).");
-                return;
-            }
+        Map<String, String> first = settingsOrAsk();
+        if (first == null) return;
+        final java.util.concurrent.atomic.AtomicReference<Map<String, String>> settings = new java.util.concurrent.atomic.AtomicReference<>(first);
+        final String server = normalizeServer(first.get("server"));
+        final String domain = domainArg != null ? domainArg : first.get("domain");
+        final java.util.concurrent.atomic.AtomicBoolean running = new java.util.concurrent.atomic.AtomicBoolean(true);
+        final java.util.concurrent.atomic.AtomicReference<SshClientTunnel> current = new java.util.concurrent.atomic.AtomicReference<>();
+
+        // Ctrl+C: stop reconnecting, close the tunnel, remove it from the server
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            running.set(false);
+            SshClientTunnel t = current.get();
+            if (t != null) t.stop();
             try {
-                SshClientTunnel tunnel = new SshClientTunnel();
-                int sshPort = json.optInt("sshPort", number(c, "sshPort", 0));      // the server says where to connect
-                if (sshPort <= 0) {
-                    System.out.println("The server did not say which SSH port to use (an older server?). Set SAFEEXPOSE_SSH_PORT.");
-                    return;
-                }
-                tunnel.setSshPort(sshPort);
-                tunnel.setConnectSeconds(number(c, "connectSeconds", 30));
-                tunnel.setAuthSeconds(number(c, "authSeconds", 10));
-                SshClientTunnel.PortForard pf = new SshClientTunnel.PortForard(json.optString("sshHost", new URL(server).getHost()), json.getString("username"),
-                        json.getString("password"), json.getInt("systemPort"), Integer.parseInt(port));
-                pf.setFqdn(json.getString("fqdn"));
-                if (localHost != null) pf.setLocalHost(localHost);
-                System.out.println("\nExposing " + pf.getLocalHost() + ":" + port + " at  " + json.getString("fqdn") + "\n(Ctrl+C to stop)\n");
-                tunnel.forwardPort(pf).join();
-                if (!tunnel.isDisconnected()) return;
-                int wait = number(c, "reconnectSeconds", 10);
-                System.out.println("Disconnected. Reconnecting in " + wait + " seconds...");
-                Thread.sleep(wait * 1000L);
-            } catch (InterruptedException e) {
-                return;
-            } catch (Exception e) {
-                System.err.println("Error starting tunnel: " + e.getMessage());
-                return;
+                deleteTunnel(name);
+            } catch (RuntimeException e) {
+                System.out.println("Could not remove the tunnel from the server (" + e.getMessage() + ").");
             }
+        }));
+
+        Reconnector reconnector = new Reconnector(number(first, "reconnectSeconds", 2), number(first, "reconnectMaxSeconds", 60), 30,
+                s -> Thread.sleep(s * 1000L), msg -> System.out.println(msg));
+
+        reconnector.run(
+                () -> {
+                    String token = login(server, settings);
+                    LoginChecker.removeApp(server, token, name);                       // clear a stale tunnel with this name
+                    JSONObject json = LoginChecker.createTunnel(server, token, name, Integer.parseInt(port), domain);
+                    System.out.println("\nExposing " + (localHost == null ? "localhost" : localHost) + ":" + port + " at  " + json.getString("fqdn") + "\n(Ctrl+C to stop; it reconnects by itself if the network drops)\n");
+                    return json;
+                },
+                json -> {
+                    Map<String, String> c = settings.get();
+                    int sshPort = json.optInt("sshPort", number(c, "sshPort", 0));    // the server says where to connect
+                    if (sshPort <= 0) {
+                        throw new LoginChecker.HttpFailure(400, "The server did not say which SSH port to use (an older server?). Set SAFEEXPOSE_SSH_PORT.");
+                    }
+                    SshClientTunnel tunnel = new SshClientTunnel();
+                    tunnel.setSshPort(sshPort);
+                    tunnel.setConnectSeconds(number(c, "connectSeconds", 30));
+                    tunnel.setAuthSeconds(number(c, "authSeconds", 10));
+                    tunnel.setHeartbeatSeconds(number(c, "heartbeatSeconds", 15));
+                    String sshHost = json.optString("sshHost", hostOf(server));
+                    SshClientTunnel.PortForard pf = new SshClientTunnel.PortForard(sshHost, json.getString("username"),
+                            json.getString("password"), json.getInt("systemPort"), Integer.parseInt(port));
+                    pf.setFqdn(json.getString("fqdn"));
+                    if (localHost != null) pf.setLocalHost(localHost);
+                    current.set(tunnel);
+                    long started = System.currentTimeMillis();
+                    try {
+                        tunnel.forwardPort(pf).join();
+                    } catch (InterruptedException e) {
+                        tunnel.stop();
+                        return new Reconnector.Attempt(Reconnector.Outcome.LOST, 0, "interrupted");
+                    }
+                    if (tunnel.isAuthRejected()) return new Reconnector.Attempt(Reconnector.Outcome.FORGOTTEN, 0, tunnel.getError());
+                    if (tunnel.isEstablished()) return new Reconnector.Attempt(Reconnector.Outcome.LOST, System.currentTimeMillis() - started, tunnel.getError());
+                    return new Reconnector.Attempt(Reconnector.Outcome.NOT_CONNECTED, 0, tunnel.getError());
+                },
+                running::get);
+    }
+
+    private static String hostOf(String server) {
+        try {
+            return new URL(server).getHost();
+        } catch (java.net.MalformedURLException e) {
+            throw new LoginChecker.HttpFailure(400, "Invalid server address: " + server);
         }
     }
 
@@ -331,9 +371,16 @@ public class TunnelManager {
             return;
         }
         String server = normalizeServer(c.get("server"));
-        String token = LoginChecker.checkLogin(server, c.get("username"), c.get("password"));
-        if (token == null) return;
-        LoginChecker.removeApp(server, token, name);
-        System.out.println("Removed: " + name);
+        try {
+            String token = LoginChecker.checkLogin(server, c.get("username"), c.get("password"));
+            if (token == null) {
+                System.out.println("Login failed; the tunnel was not removed.");
+                return;
+            }
+            LoginChecker.removeApp(server, token, name);
+            System.out.println("Removed: " + name);
+        } catch (LoginChecker.NetworkException | LoginChecker.HttpFailure e) {
+            System.out.println("Could not remove the tunnel (" + e.getMessage() + ").");
+        }
     }
 }

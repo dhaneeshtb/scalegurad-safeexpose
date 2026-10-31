@@ -7,7 +7,7 @@ safeexpose 8080              # https://app-8080.<your-domain>
 safeexpose 8080 my-app       # https://my-app.<your-domain>
 ```
 
-Press Ctrl+C to stop; the tunnel is removed. If the connection drops it reconnects by itself.
+Press Ctrl+C to stop; the tunnel is removed. If the network drops it keeps retrying until the connection is back (see *Network failures*).
 
 ## Install (no source code, no build)
 
@@ -72,7 +72,21 @@ The older `safeexpose start <name> <port>` still works.
 Nothing is built into the program: the server address, login, domain and SSH port come from you or from the server (the
 server tells the client which host and SSH port to use). Optional tuning, as environment variables or keys in
 `~/.tunnel_config`: `SAFEEXPOSE_SSH_PORT` (only needed with an older server that does not report it),
-`SAFEEXPOSE_RECONNECT_SECONDS` (default 10), `SAFEEXPOSE_CONNECT_SECONDS` (30), `SAFEEXPOSE_AUTH_SECONDS` (10).
+`SAFEEXPOSE_RECONNECT_SECONDS` (first wait, default 2), `SAFEEXPOSE_RECONNECT_MAX_SECONDS` (60), `SAFEEXPOSE_HEARTBEAT_SECONDS` (15),
+`SAFEEXPOSE_CONNECT_SECONDS` (30), `SAFEEXPOSE_AUTH_SECONDS` (10).
+
+## Network failures
+
+`safeexpose` is meant to be left running. It survives Wi-Fi changes, sleep and wake, a restarting server and short outages:
+
+- The link is probed every 15 s, so a connection that died silently is noticed within about half a minute.
+- When it drops, only the SSH connection is re-opened. The route and credentials stay on the server, so the public address does
+  not change and nothing is recreated. Waits grow 2, 4, 8 ... up to 60 s while the network is down and restart from 2 s once a
+  connection has held for 30 s.
+- If the server restarted and forgot the tunnel, it is created again automatically.
+- An unreachable server is never mistaken for a wrong password; you are asked for a new password only when the server refuses
+  the saved one. A refusal that retrying cannot fix (for example an invalid domain) ends the program with the reason.
+- Ctrl+C stops everything and removes the tunnel.
 
 ## Choosing the public name
 

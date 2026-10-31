@@ -4,22 +4,30 @@ import org.apache.sshd.client.SshClient;
 import org.apache.sshd.client.session.ClientSession;
 import org.apache.sshd.client.session.forward.PortForwardingTracker;
 import org.apache.sshd.common.session.Session;
+import org.apache.sshd.common.session.SessionHeartbeatController;
 import org.apache.sshd.common.session.SessionListener;
 import org.apache.sshd.common.util.net.SshdSocketAddress;
 
+import org.apache.sshd.core.CoreModuleProperties;
+
 import java.io.IOException;
+import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.Condition;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
 
 public class SshClientTunnel {
 
-    private final Lock lock = new ReentrantLock();
-    private final Condition condition = lock.newCondition();
+    private final CountDownLatch ended = new CountDownLatch(1);
 
-    private boolean isDisconnected=false;
+    private volatile boolean isDisconnected = false;
+    private volatile boolean established = false;
+    private volatile boolean authRejected = false;
+    private volatile String error;
+    private int heartbeatSeconds = 15;
 
+
+    /** The address the server binds the forwarded port to. */
+    private static final String REMOTE_BIND = System.getProperty("safeexpose.remoteBind", "0.0.0.0");
 
     private int sshPort;
     private int connectSeconds = 30;
@@ -36,6 +44,11 @@ public class SshClientTunnel {
 
     public void setAuthSeconds(int s) {
         this.authSeconds = s;
+    }
+
+    /** How often the connection is probed; a server that stops answering ends the session, so a dead link is noticed. */
+    public void setHeartbeatSeconds(int s) {
+        this.heartbeatSeconds = s;
     }
 
     public static class PortForard{
@@ -123,85 +136,72 @@ public class SshClientTunnel {
         isDisconnected = disconnected;
     }
 
-    public Thread forwardPort(PortForard portForard){
-        Thread t= new Thread(()->{
+    /** True once the port forward was set up (even if the link was lost later). */
+    public boolean isEstablished() {
+        return established;
+    }
+
+    /** True if the server answered but refused the tunnel's login (it no longer knows this tunnel, e.g. after a restart). */
+    public boolean isAuthRejected() {
+        return authRejected;
+    }
+
+    /** Why the tunnel could not start or ended, or null. */
+    public String getError() {
+        return error;
+    }
+
+    /** Ends the tunnel (the session is closed by the thread that owns it). */
+    public void stop() {
+        ended.countDown();
+    }
+
+    public Thread forwardPort(PortForard pf) {
+        Thread t = new Thread(() -> {
             try (SshClient client = SshClient.setUpDefaultClient()) {
+                client.setForwardingFilter(new MyForwardingFilter());
+                // probe the link: a connection that silently died (sleep, Wi-Fi change) is detected and the session ended
+                client.setSessionHeartbeat(SessionHeartbeatController.HeartbeatType.RESERVED, Duration.ofSeconds(heartbeatSeconds));
+                CoreModuleProperties.HEARTBEAT_REPLY_WAIT.set(client, Duration.ofSeconds(heartbeatSeconds));
                 client.start();
-
-                client.setForwardingFilter(new MyForwardingFilter()); // Set your filter implementation
-                try (ClientSession session = client.connect(portForard.getUsername(), portForard.getRemoteHost(), sshPort)
+                try (ClientSession session = client.connect(pf.getUsername(), pf.getRemoteHost(), sshPort)
                         .verify(connectSeconds, TimeUnit.SECONDS).getSession()) {
-                    session.addPasswordIdentity(portForard.getPassword());
-                    session.auth().verify(authSeconds, TimeUnit.SECONDS);
-
-
-
-
-                    // Enable remote port forwarding
-                    SshdSocketAddress remoteAddress = new SshdSocketAddress("0.0.0.0", portForard.getRemotePort());
-                    SshdSocketAddress localAddress = new SshdSocketAddress(portForard.getLocalHost(), portForard.getLocalPort());
-                    PortForwardingTracker tracker = session.createRemotePortForwardingTracker(remoteAddress, localAddress);
-
-                    tracker.getSession();
-                    tracker.getSession().addSessionListener(new SessionListener() {
-                        @Override
-                        public void sessionDisconnect(Session session, int reason, String msg, String language, boolean initiator) {
-                            System.out.println("Session Disconnected :" + portForard.getFqdn());
-                            if(!isDisconnected) {
-                                isDisconnected = true;
-                                condition.signalAll(); // Notify consumer
-                            }
-
-                        }
-                    });
-                    System.out.println("✅ Tunnel established: localhost:" + portForard.getLocalPort() + " -> "+portForard.getRemoteHost()+":" + portForard.getRemotePort());
-                    System.out.println("✅ Public Accessible FQDN :" + portForard.getFqdn());
-
+                    session.addPasswordIdentity(pf.getPassword());
+                    try {
+                        session.auth().verify(authSeconds, TimeUnit.SECONDS);
+                    } catch (IOException e) {
+                        authRejected = session.isOpen();      // answered but refused, as opposed to the link dying
+                        throw e;
+                    }
+                    SshdSocketAddress remote = new SshdSocketAddress(REMOTE_BIND, pf.getRemotePort());
+                    SshdSocketAddress local = new SshdSocketAddress(pf.getLocalHost(), pf.getLocalPort());
+                    PortForwardingTracker tracker = session.createRemotePortForwardingTracker(remote, local);
                     session.addSessionListener(new SessionListener() {
                         @Override
-                        public void sessionCreated(Session session) {
-                            System.out.println("Session created: " + session);
+                        public void sessionClosed(Session closed) {
+                            ended.countDown();
                         }
 
                         @Override
-                        public void sessionEvent(Session session, Event event) {
-                            System.out.println("Session event: " + event);
-                        }
-
-                        @Override
-                        public void sessionClosed(Session session) {
-                            System.out.println("Session closed: " + session);
-                            if(!isDisconnected) {
-                                lock.lock();
-                                try {
-                                    isDisconnected = true;
-                                    condition.signalAll(); // Notify consumer
-                                }finally {
-                                    lock.unlock();
-                                }
-
-                            }
-
+                        public void sessionDisconnect(Session closed, int reason, String msg, String language, boolean initiator) {
+                            ended.countDown();
                         }
                     });
-                    lock.lock();
-                    try {
-                        // Keep the session open
-                        condition.await();
-                    }catch (Exception e){
-                        e.printStackTrace();
-                    }finally {
-                        lock.unlock();
-                    }
-
-
+                    established = true;
+                    System.out.println("Tunnel up: " + pf.getLocalHost() + ":" + pf.getLocalPort() + " -> " + pf.getRemoteHost() + ":" + pf.getRemotePort());
+                    if (!session.isOpen()) ended.countDown();
+                    ended.await();                                // until the session closes or stop() is called
+                    tracker.close();
                 }
-            } catch (IOException e) {
-                e.printStackTrace();
-                System.out.println("✅ Tunnel removed: localhost:" + portForard.getLocalPort() + " -> remote:" + portForard.getRemotePort());
-
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (IOException | RuntimeException e) {
+                error = e.getClass().getSimpleName() + (e.getMessage() == null ? "" : ": " + e.getMessage());
+            } finally {
+                isDisconnected = true;
+                ended.countDown();
             }
-        });
+        }, "safeexpose-ssh");
         t.setDaemon(true);
         t.start();
         return t;
